@@ -1,0 +1,224 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+	"path"
+
+	"github.com/spf13/cobra"
+
+	kz "github.com/kazuya0202/kazuya0202"
+)
+
+var cfgFile string
+var isForce bool
+var isAll bool
+
+// FileNameConfig ...
+type FileNameConfig struct {
+	Prev string
+	Next string
+}
+
+// rootCmd represents the base command when called without any subcommands
+var rootCmd = &cobra.Command{
+	Use:   "seqren",
+	Short: "ファイル名を連番にリネームします.",
+	Long:  "ファイル名を連番にリネームします.",
+	Run: func(cmd *cobra.Command, args []string) {
+		var changeName string
+
+		/* === [FlAG] -n / --name === */
+		// 変更後のファイル名を取得する
+		str := kz.GetStringValueWithFlags(cmd, "name")[0]
+
+		if str != "DEFAULT_NAME" {
+			// 初期値でないなら, その文字列を設定する
+			fmt.Println("change name:", str)
+			changeName = str
+		} else {
+			// 初期値なら入力した文字列を設定する
+			fmt.Print("Enter filename: ")
+			changeName = kz.GetInput("")
+		}
+		/* ----- */
+
+		/* === [FLAG] -p / --path === */
+		// 変更先のパスを取得する
+		targetPath := kz.GetStringValueWithFlags(cmd, "path")[0]
+		targetPath = path.Clean(targetPath)
+
+		// パス先のファイルをすべて取得する（深さ1）
+		files := kz.GetFiles(targetPath)
+
+		// ファイル | パスが存在しないなら
+		if files == nil {
+			fmt.Println("パスが存在しない, またはファイルが存在しません.")
+			os.Exit(-1)
+		}
+		/* ----- */
+
+		/* === [FLAG] -s / --seq ===*/
+		// 何桁の連番にするか（N桁0埋め）
+		seq := kz.GetIntValueWithFlags(cmd, "seq")
+
+		// 0未満なら終了
+		if seq < 0 {
+			fmt.Println("0以上の数値を入力してください.")
+			os.Exit(-1)
+		}
+
+		// N桁0埋めのフォーマットをつくる
+		format := fmt.Sprintf("%%s%%0%dd%%s", seq)
+		/* ----- */
+
+		fnConfig := determineFileConfig(files, []string{format, changeName, targetPath})
+		fncNum := len(fnConfig)
+
+		// 対象のファイルがないなら
+		if fncNum == 0 {
+			fmt.Println("リネーム対象のファイルはありません.")
+			os.Exit(0)
+		}
+
+		// 変更予定ファイルを列挙する
+		showNum := 10 // デフォルトでは10
+
+		// 全てのファイルを表示するなら
+		if isAll {
+			showNum = fncNum
+		}
+
+		// 列挙
+		if fncNum < showNum {
+			showNum = fncNum
+		}
+
+		for i := 0; i < showNum; i++ {
+			fmt.Printf("%-20s -> %-20s\n",
+				fnConfig[i].Prev, fnConfig[i].Next)
+		}
+		if fncNum > showNum {
+			fmt.Println("  ...")
+			fmt.Printf("%-20s -> %-20s\n",
+				fnConfig[fncNum-1].Prev, fnConfig[fncNum-1].Next)
+		}
+		fmt.Println()
+
+		// 確認してから実行するなら
+		if !isForce {
+			fmt.Print("実行しますか? (y/n): ")
+			yn := kz.GetInput("")
+
+			reg := []string{"y", "Y", "yes", "Yes"}
+			itf := kz.StringArrayToInterfaceArray(reg)
+			chk := kz.HasValueInArray(yn, itf)
+
+			// yes以外なら中断
+			if !chk {
+				fmt.Println("中断しました.")
+				os.Exit(0)
+			}
+		}
+
+		// リネーム
+		for _, fc := range fnConfig {
+			if err := os.Rename(fc.Prev, fc.Next); err != nil {
+				fmt.Println(err)
+			}
+		}
+		fmt.Println("リネームが終了しました.")
+	},
+}
+
+// determineFileConfig ...
+// 	 args[0] -- format
+// 	 args[1] -- changeName
+//   args[2] -- targetPath
+func determineFileConfig(files []string, args []string) []FileNameConfig {
+	format := args[0]
+	changeName := args[1]
+	targetPath := args[2]
+
+	var fileConfig []FileNameConfig
+	var nextNames []string // 変換後に存在するファイル名
+
+	length := len(files)
+	seq := 0
+	fileIdx := 0
+
+	for fileIdx < length {
+		seq++ // increment
+
+		ext := path.Ext(files[fileIdx])
+		name := fmt.Sprintf(format, changeName, seq, ext)
+
+		fnc := FileNameConfig{
+			Prev: path.Join(targetPath, files[fileIdx]),
+			Next: path.Join(targetPath, name),
+		}
+
+		for _, _f := range fileConfig {
+			// 両方同じなら X
+			if _f.Prev == _f.Next {
+				continue
+			}
+
+			// 変更後のファイル名が、変換対象のファイル名にあればOK
+			if fnc.Next == _f.Prev {
+				fileConfig = append(fileConfig, fnc)
+				fileIdx++
+				break
+			}
+		}
+
+		// 存在していれば continue
+		if kz.Exists(fnc.Next) {
+			nextNames = append(nextNames, fnc.Next)
+			continue
+		}
+
+		// 変換前のファイル名が、すでに変換したファイル名と同じなら next
+		itfFiles := kz.StringArrayToInterfaceArray(nextNames)
+		if kz.HasValueInArray(fnc.Prev, itfFiles) {
+			fileIdx++ // to next file
+			continue
+		}
+
+		fileConfig = append(fileConfig, fnc) // 変換対象ファイルを追加
+		fileIdx++                            // next file
+	}
+	return fileConfig
+}
+
+// Execute adds all child commands to the root command and sets flags appropriately.
+// This is called by main.main(). It only needs to happen once to the rootCmd.
+func Execute() {
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+}
+
+func init() {
+	cobra.OnInitialize(initConfig)
+
+	// Here you will define your flags and configuration settings.
+	// Cobra supports persistent flags, which, if defined here,
+	// will be global for your application.
+
+	// rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.rename.yaml)")
+
+	// Cobra also supports local flags, which will only run
+	// when this action is called directly.
+	// rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+
+	rootCmd.PersistentFlags().StringP("name", "n", "DEFAULT_NAME", "変更するファイル名")
+	rootCmd.PersistentFlags().StringP("path", "p", "./", "ターゲットのパス")
+	rootCmd.PersistentFlags().IntP("seq", "s", 3, "N桁0埋め")
+	rootCmd.PersistentFlags().BoolVarP(&isForce, "force", "f", false, "確認せずに実行する")
+	rootCmd.PersistentFlags().BoolVarP(&isAll, "all-show", "a", false, "全てのファイルを表示する")
+}
+
+// initConfig reads in config file and ENV variables if set.
+// func initConfig() {}
